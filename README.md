@@ -1,119 +1,72 @@
-CleanRat is a remote access tool (RAT). Its primary goal is to stay very clean, it a fileless APT-style RAT and evades Windows Defender. The RAT leverages Google Drive as the sole command-and-control (C2) channel, and uses in-memory execution techniques.
+# CleanRAT: Advanced Red Team Simulation Framework
 
----
+## Abstract
 
-## Project Overview
+CleanRAT is a **Rust-based** Remote Access Trojan (RAT) designed for realistic red team simulations. It uses **Google Drive** as a covert command-and-control (C2) channel, exchanging encrypted `.bak` command and response files via Drive folders. Key features include AES-encrypted credentials, in-memory decryption, anti-debugging checks, process masquerading, and a self-deletion “wipe-out” command. A Python-based GUI serves as the operator interface, and the initial payload can be deployed via a USB Rubber Ducky to simulate physical attack vectors.
 
-CleanRat is engineered to run entirely in memory, minimizing on-disk artifacts and making it difficult for traditional security tools to detect its presence. The key features of CleanRat include:
+## Features
 
-- **Google Drive C2 Integration:**  
-  Uses a Google Cloud service account and OAuth2 for authentication to interact with Google Drive. Command files (with a `.bak` extension) are uploaded to a designated folder, and the RAT polls for these files, executes the commands, and uploads responses back to Google Drive.
+* **Cloud C2 Channel:** Bidirectional command/response communication over Google Drive folders, with all data encrypted.
+* **Embedded Configuration:** C2 parameters (folder IDs, API credentials) are compiled into the binary (no external config files).
+* **Credential Obfuscation:** AES-128 encryption of Drive tokens and credentials; keys and blobs are obfuscated at compile time and only decrypted in memory during execution.
+* **Anti-Analysis:** No visible console window (Windows GUI subsystem); anti-debug checks (e.g. `IsDebuggerPresent`, memory breakpoints) that terminate if a debugger or analysis tool is detected.
+* **Process Masquerading:** The client executable can be renamed (e.g. `WinUpdate32.exe`) or use a custom icon to appear benign.
+* **Self-Destruct (“Wipe-Out”):** A special command triggers secure deletion of the executable and cleanup of any temporary files or logs.
+* **Python GUI Operator Console:** A decoupled host interface for sending commands and retrieving output, abstracting Drive API details.
+* **Hardware Delivery:** Initial payload deployment via USB Rubber Ducky (keystroke injector) to emulate physical compromise.
 
-- **Evasion & In-Memory Execution:**  
-Evasion techniques such as AMSI bypass, reflective DLL injection, and Windows Fibers scheduling are applied to ensure the payload is executed in-memory within a trusted process. This approach reduces its visibility and footprint on the target system.
+## Technologies Used
 
-- **Payload Module (Command Execution):**  
-  Executes system shell commands with elevated privileges (for simulation, standard shell execution is used) and captures the output. This output is then packaged and sent back via the Google Drive C2 channel.
+* **Rust (Client):** Core RAT implementation (async networking via *Tokio*, HTTP via *Reqwest*, JSON parsing via *Serde*, encryption via *openssl/aes*, base64, Windows API via *winapi*, etc.).
+* **Python (Host GUI):** Operator interface using *PyDrive2* for Google Drive interactions, *cryptography* library for AES, *argparse/time/uuid* for CLI and timing features.
+* **Google Drive API:** Drive v3 REST API with JWT-based OAuth2 for secure authentication and file operations.
+* **AES Encryption:** Symmetric encryption (AES-128) for securing commands, outputs, and credentials, with keys embedded in the code.
 
-- **Minimal Footprint:**  
-  The RAT is delivered as a single executable dropper. Once executed, it loads all functionality in memory, performs evasion, and begins polling Google Drive for command files.
+## System Architecture
 
----
+CleanRAT’s architecture centers on Google Drive as the *only* communication medium. The **C2 Operator** runs a Python GUI that packages commands into encrypted `.bak` files and uploads them to a designated Drive *command folder*. The **RAT Client**, deployed on the target, continuously polls this command folder via the Drive API. When a new command file is detected, the client decrypts and executes it locally. The output is encrypted and uploaded as a `.bak` file to a separate *response folder*, which the GUI then polls.  All operations occur over authenticated Drive API calls (no open TCP ports or direct network connections). This decoupled, asynchronous design ensures high reliability and low visibility, mimicking real-world stealth C2 communication.
 
-## Modular Design
+## Command Execution Workflow
 
-The project is organized into three main modules:
+1. The operator enters a shell command or script in the GUI and sends it. The GUI creates an encrypted `.bak` file and uploads it to the Drive **command folder**.
+2. The RAT client polls the command folder at intervals. When a new command file appears, the client downloads and decrypts it.
+3. The client executes the command locally (using standard system APIs or spawning processes).
+4. The client captures the execution output, encrypts it, and uploads it to the Drive **response folder** as a `.bak` file.
+5. The GUI polls the response folder, downloads any output files, decrypts them, and displays the results to the operator. Sent command and received response files are then deleted from Drive to minimize traces.
 
-### 1. gdrive-communication Module
+## GUI Host Interface Usage
 
-This module is responsible for all interactions with Google Drive. It is a consolidation of Google Drive authentication, file operations, and the command polling/processing logic.
+* **Command Dispatch:** The operator types a system command into the GUI. The interface encrypts it and uploads it as a `.bak` file to the Google Drive command folder.
+* **Result Display:** The GUI continuously polls the Drive response folder. When an encrypted output file is found, the GUI downloads and decrypts it, then shows the command output in the interface.
+* **Automatic Cleanup:** After processing, the GUI deletes the `.bak` command and response files from Google Drive, leaving minimal forensic artifacts.
+* **Session Management:** The host GUI is decoupled from the client, allowing one GUI instance to control multiple RAT clients by segregating command/response folders.
 
-- **Authentication & Token Management:**  
-  Uses a service account key and JWT-based OAuth2 flow to obtain an access token for accessing Google Drive APIs.
-  
-- **File Operations:**  
-  Implements functions to:
-  - List files in a designated command folder (files with a `.bak` extension).
-  - Download command files.
-  - Upload response files.
-  
-- **Command Polling & Processing:**  
-  Periodically polls the command folder, downloads new command files, executes the embedded command, captures the output, writes the output to a temporary file, and then uploads the response file to the response folder.
+## Self-Deletion and Stealth Mechanisms
 
-### 2. Evasion Module
+* **Wipe-Out Command:** A special “wipe-out” instruction causes the RAT to spawn a separate process that securely deletes the executable and overwrites any leftover files. All temporary logs and intermediate files are removed before the client terminates.
+* **Anti-Debugging:** The client includes runtime checks (e.g. `IsDebuggerPresent`, scanning for breakpoints or analysis tools) that immediately halt execution if a debugger is detected.
+* **Console-Less Execution:** Compiled for the Windows GUI subsystem, the RAT runs without any visible console window.
+* **Process Masquerading:** The executable can be renamed (e.g. using a common system-update process name) and uses a custom icon to appear legitimate.
+* **Embedded Credentials:** All sensitive data (API tokens, folder IDs, encryption keys) is encrypted and embedded in the binary (using Rust’s `include_str!()`), avoiding external config files that could raise suspicion.
+* **Minimal Footprint:** The RAT leaves no scheduled tasks or registry entries by default; any temporary files are deleted immediately after use. These measures collectively create a stealthy operational profile similar to real advanced malware.
 
-This module encapsulates the advanced evasion techniques required to run the RAT stealthily in memory.
+## Security Considerations
 
-- **AMSI Bypass:**  
-  Simulated bypass that patches AMSIScanBuffer to prevent Windows Defender from scanning the payload.
-  
-- **Reflective DLL Injection:**  
-  Simulated reflective DLL injection that "injects" the payload into a trusted process (e.g., explorer.exe) without writing to disk.
-  
-- **Windows Fibers:**  
-  Simulated fiber scheduling that converts threads to fibers and schedules payload execution in a cooperative manner to avoid thread-based detection.
+CleanRAT is intended for controlled red team or lab environments. **Least-privilege:** Ensure the Google service account has only the necessary Drive scopes and access to the specific folders (no broader permissions). **Encrypted Channels:** All communications use AES encryption and OAuth2 tokens that auto-refresh at runtime, reducing static indicators. Because CleanRAT uses only authenticated API calls (no listening ports), monitoring should focus on unusual Drive activity or service account usage. Operators should secure the service account key and the compiled binary; signing the executable and using hardened token scopes is recommended. Additionally, disable internet access on production hosts when running the client outside of test scenarios to prevent accidental leakage.
 
-### 3. Payload Module
+## Future Enhancements
 
-The payload module is responsible for executing high-privilege commands on the target system.
+* **Multi-Client Orchestration:** Extend the framework to manage multiple simultaneous RAT clients. Each client would use unique identifiers and encryption keys, with segregated folders or subfolders for commands and responses.
+* **Alternate C2 Channels:** Support additional cloud services (e.g., Dropbox, OneDrive) or custom APIs to diversify covert channels.
+* **Event-Driven C2:** Implement real-time messaging or live shells instead of polling (e.g., webhooks, push notifications) for faster responsiveness.
+* **In-Memory & Fileless Execution:** Enable payloads and commands to run entirely in memory without touching disk, and add advanced injection techniques.
+* **Cryptographic Hardening:** Use stronger cipher modes (e.g., AES-GCM), rotating keys, and message authentication to improve confidentiality and integrity.
+* **Extensible Post-Exploitation Modules:** Develop plugins for data exfiltration, persistence (e.g., registry or service), or privilege escalation.
+* **Cross-Platform Support:** Port the client to Linux/macOS or integrate with other languages to increase compatibility. Pursuing these directions will broaden CleanRAT’s capabilities as a versatile red team toolkit.
 
-- **Command Execution:**  
-  Provides functions to execute commands (using the system shell) and capture the output.  
-  - In a realistic environment, this module could leverage Windows API calls to escalate privileges, but for our PoC, standard command execution is used.
-  
-- **Integration with C2:**  
-  The output from command execution is sanitized and sent back to the operator via the Google Drive communication channel.
+## Screenshots
+### Host Side GUI – Sending Commands
+![Host GUI - Sending Commands](host_gui_send.png)
 
----
-
-## Workflow
-
-1. **Initial Drop and In-Memory Loading:**  
-   - The RAT is delivered as a single, small executable dropper.
-   - Upon execution, the dropper triggers the evasion module to:
-     - Patch AMSI (simulate AMSI bypass).
-     - Perform reflective DLL injection (simulate payload injection into a trusted process).
-     - Schedule payload execution using Windows Fibers (simulate fiber scheduling).
-
-2. **Google Drive C2 Communication:**  
-   - The payload, now running entirely in memory, loads its configuration from `gdrive_config.json` and uses the service account key to obtain an access token.
-   - The RAT enters a continuous polling loop where it checks a designated command folder on Google Drive for new `.bak` files.
-
-3. **Command Processing:**  
-   - When a new command file is detected:
-     - The file is downloaded and its content (a command) is extracted.
-     - The command is executed using the payload module.
-     - The output is captured, saved as a temporary response file, and then uploaded back to a designated response folder on Google Drive.
-     - Temporary files are then cleaned up.
-
-4. **Operator Interaction:**  
-   - A host-side Python script (or similar tool) can be used to:
-     - Prompt the operator to enter commands.
-     - Create and upload command files to Google Drive.
-     - Continuously poll for and download response files, displaying the sanitized output.
-
----
-
-## Directory Structure
-
-```
-CleanRat_PoC/
-├── Cargo.toml                # Project manifest with dependencies.
-├── gdrive_config.json        # Configuration file for Google Drive credentials and folder IDs.
-└── src/
-    ├── main.rs               # Entry point: Initializes evasion routines and starts Google Drive polling.
-    ├── gdrive_comm/          # gdrive-communication module.
-    │    ├── mod.rs           # Re-exports sub-modules: auth, file_ops, drive_comm.
-    │    ├── auth.rs          # OAuth2 token management using service account credentials.
-    │    ├── file_ops.rs      # File listing, downloading, and uploading functions.
-    │    └── drive_comm.rs    # Polling loop that processes command files and uploads responses.
-    ├── evasion/              # Evasion module.
-    │    ├── mod.rs           # Re-exports evasion sub-modules.
-    │    ├── amsi_bypass.rs   # AMSI bypass routine.
-    │    ├── dll_injection.rs # Reflective DLL injection routine.
-    │    └── windows_fibers.rs# Windows Fibers scheduling routine.
-    └── payload/              # Payload module.
-         └── command_exec.rs # High-privilege command execution functionality.
-```
-
-## Stay tunned for demo
+### RAT Client Execution on Target and command execution
+![RAT Running on VM](Working.png)
